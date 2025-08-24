@@ -1,0 +1,358 @@
+-----------------------------------------------------------
+-- 白羽脚本验证核心逻辑（LocalScript，适配多注入器）
+-- 验证标记：注入器持久化目录下的"同意白羽脚本"文件夹
+-----------------------------------------------------------
+
+-- ================ 基础服务与变量 ================
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local RunService = game:GetService("RunService")
+local Color3 = Color3
+local UDim2 = UDim2
+local Instance = Instance
+local task = task
+local Enum = Enum
+
+-- 注入器文件操作兼容（核心：获取持久化路径）
+local readFunc, writeFunc, getPathFunc
+pcall(function()
+    -- 适配忍者/Delta/Synapse等注入器
+    if type(syn) == "table" then
+        readFunc = syn.readfile or readfile
+        writeFunc = syn.writefile or writefile
+        getPathFunc = syn.datapath -- 忍者注入器获取沙盒路径
+    else
+        -- 其他注入器兼容
+        readFunc = readfile or readFile
+        writeFunc = writefile or writeFile
+        -- 尝试获取默认路径（如Krnl等）
+        getPathFunc = function()
+            return "Roblox/Scripts"
+        end
+    end
+end)
+
+-- ================ 验证文件夹核心逻辑 ================
+-- 获取持久化文件夹路径（跨注入器兼容）
+local function getVerifyFolderPath()
+    local basePath
+    if getPathFunc then
+        -- 优先使用注入器提供的沙盒路径（如忍者的syn.datapath()）
+        basePath = getPathFunc()
+    else
+        -- fallback路径（适配多数PC注入器）
+        basePath = "C:/RobloxScripts" -- 可根据系统自动调整
+        pcall(function()
+            -- 尝试检测系统类型（Windows/macOS）
+            if game:GetService("RunService"):IsStudio() then
+                basePath = "Roblox/Scripts" -- Studio环境
+            elseif string.find(game:GetService("MarketplaceService"):GetProductInfo(1).Name, "Mac") then
+                basePath = "~/Library/Roblox/Scripts" -- macOS路径
+            end
+        end)
+    end
+    -- 拼接完整文件夹路径
+    return basePath .. "/同意白羽脚本"
+end
+
+-- 检查文件夹是否存在（跨注入器兼容）
+local function folderExists()
+    if not readFunc then
+        return false
+    end -- 无文件操作能力则强制验证
+    local folderPath = getVerifyFolderPath()
+    -- 尝试读取文件夹（注入器通常通过检查路径是否可访问判断存在性）
+    local success = pcall(function()
+        -- 不同注入器判断方式可能不同，这里用"尝试读取"作为存在性检测
+        readFunc(folderPath .. "/.verify") -- 读取文件夹内的标记文件
+    end)
+    return success
+end
+
+-- 创建验证文件夹（跨注入器兼容）
+local function createTargetFolder()
+    if not writeFunc then
+        return
+    end -- 无写入能力则跳过（不影响使用，仅下次仍需验证）
+    local folderPath = getVerifyFolderPath()
+    local success = pcall(function()
+        -- 1. 创建文件夹（注入器通常支持通过写入空文件创建文件夹）
+        writeFunc(folderPath .. "/.verify", "") -- 写入空标记文件，自动创建父文件夹
+        print("验证文件夹创建成功：" .. folderPath)
+    end)
+    if not success then
+        -- 降级方案：若无法创建文件夹，临时用PlayerGui文件夹（仅当前会话有效）
+        local tempFolder = Instance.new("Folder")
+        tempFolder.Name = "同意白羽脚本"
+        tempFolder.Parent = PlayerGui
+        print("警告：持久化文件夹创建失败，使用临时文件夹（仅当前会话有效）")
+    end
+end
+
+-- ================ 通用UI工具函数 ================
+-- 创建屏幕GUI
+local function createScreenGui(name)
+    local gui = Instance.new("ScreenGui")
+    gui.Name = name
+    gui.IgnoreGuiInset = true
+    gui.Parent = PlayerGui
+    return gui
+end
+
+-- 创建带圆角的框架
+local function createFrame(parent, size, position)
+    local frame = Instance.new("Frame")
+    frame.Size = size
+    frame.Position = position
+    frame.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+    frame.BackgroundTransparency = 0.3
+    frame.BorderSizePixel = 1
+    frame.BorderColor3 = Color3.fromRGB(220, 240, 255)
+    frame.Parent = parent
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = frame
+    return frame
+end
+
+-- 创建基础标签
+local function createBasicLabel(parent, text, size, position)
+    local label = Instance.new("TextLabel")
+    label.Text = text
+    label.Size = size
+    label.Position = position
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.TextSize = 16
+    label.BackgroundTransparency = 1
+    label.Parent = parent
+    return label
+end
+
+-- 创建普通标签
+local function createLabel(parent, text, size, position)
+    local label = Instance.new("TextLabel")
+    label.Text = text
+    label.Size = size
+    label.Position = position
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.TextSize = 16
+    label.BackgroundTransparency = 1
+    label.Parent = parent
+    return label
+end
+
+-- 创建按钮
+local function createButton(parent, text, size, position, callback)
+    local btn = Instance.new("TextButton")
+    btn.Text = text
+    btn.Size = size
+    btn.Position = position
+    btn.BackgroundColor3 = Color3.fromRGB(80, 80, 120)
+    btn.TextColor3 = Color3.new(1, 1, 1)
+    btn.TextSize = 14
+    btn.Parent = parent
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+    if callback then
+        btn.MouseButton1Click:Connect(callback)
+    end
+    return btn
+end
+
+-- 创建点击输入框
+local function createClickToInput(parent, size, position, triggerText, placeholderText)
+    local trigger = Instance.new("TextButton")
+    trigger.Size = size
+    trigger.Position = position
+    trigger.BackgroundColor3 = Color3.fromRGB(80, 80, 100)
+    trigger.BackgroundTransparency = 0.7
+    trigger.Text = triggerText
+    trigger.TextColor3 = Color3.new(1, 1, 1)
+    trigger.TextSize = 14
+    trigger.Parent = parent
+    local cornerTrigger = Instance.new("UICorner")
+    cornerTrigger.CornerRadius = UDim.new(0, 6)
+    cornerTrigger.Parent = trigger
+    local box = Instance.new("TextBox")
+    box.Size = size
+    box.Position = position
+    box.BackgroundColor3 = Color3.fromRGB(80, 80, 100)
+    box.BackgroundTransparency = 0.7
+    box.TextColor3 = Color3.new(1, 1, 1)
+    box.TextSize = 14
+    box.PlaceholderText = placeholderText
+    box.Visible = false
+    box.Parent = parent
+    local cornerBox = Instance.new("UICorner")
+    cornerBox.CornerRadius = UDim.new(0, 6)
+    cornerBox.Parent = box
+    trigger.MouseButton1Click:Connect(function()
+        trigger.Visible = false
+        box.Visible = true
+        box:CaptureFocus()
+    end)
+    return trigger, box
+end
+
+-- 播放临时音效
+local function playTempSound(soundId)
+    local fullSoundId = "rbxassetid://" .. tostring(soundId)
+    local sound = Instance.new("Sound")
+    sound.SoundId = fullSoundId
+    sound.Volume = 1.0
+    sound.Parent = workspace
+    pcall(function()
+        sound:Play()
+        sound.Ended:Connect(function()
+            sound:Destroy()
+        end)
+        task.delay(5, function()
+            if sound.Parent then
+                sound:Destroy()
+            end
+        end)
+    end)
+end
+
+-- ================ 验证弹窗逻辑 ================
+-- 相关验证（这里假设需要类似的验证逻辑，文本改为白羽相关）
+local function Popup_VerifyRelated()
+    local gui = createScreenGui("Popup_Related")
+    local frame = createFrame(gui, UDim2.new(0, 420, 0, 240), UDim2.new(0.5, -210, 0.5, -120))
+    createLabel(frame, "白羽相关验证问题？", UDim2.new(1, 0, 0, 35), UDim2.new(0, 0, 0, 25))
+    local _, inputRelated = createClickToInput(
+        frame, UDim2.new(1, -50, 0, 45), UDim2.new(0, 25, 0, 75),
+        "点击输入答案", "请输入正确答案"
+    )
+    local statusLabel = createLabel(frame, "", UDim2.new(1, 0, 0, 25), UDim2.new(0, 0, 0, 135))
+    local done = false
+    createButton(frame, "验证答案", UDim2.new(0.45, 0, 0, 35), UDim2.new(0.1, 0, 0, 175), function()
+        if inputRelated.Text == "白羽专属答案" then
+            done = true
+            gui:Destroy()
+        else
+            statusLabel.Text = "答案错误，无法使用白羽脚本哦😡"
+            statusLabel.TextColor3 = Color3.fromRGB(255, 60, 60)
+        end
+    end)
+    createButton(frame, "退出脚本", UDim2.new(0.45, 0, 0, 35), UDim2.new(0.5, 0, 0, 175), function()
+        gui:Destroy()
+        error("用户主动退出，脚本停止运行")
+    end)
+    while not done do
+        task.wait()
+    end
+end
+
+-- 其他验证（同理修改文本）
+local function Popup_OtherVerify()
+    local gui = createScreenGui("Popup_OtherVerify")
+    local frame = createFrame(gui, UDim2.new(0, 420, 0, 260), UDim2.new(0.5, -210, 0.5, -130))
+    createLabel(frame, "关于白羽的另一个问题？", UDim2.new(1, 0, 0, 35), UDim2.new(0, 0, 0, 25))
+    local _, inputOther = createClickToInput(
+        frame, UDim2.new(1, -50, 0, 45), UDim2.new(0, 25, 0, 75),
+        "点击输入答案", "请输入有或者没有等答案"
+    )
+    local statusLabel = createLabel(frame, "", UDim2.new(1, 0, 0, 25), UDim2.new(0, 0, 0, 135))
+    local exitCount = 0
+    local done = false
+    createButton(frame, "确定回答", UDim2.new(0.45, 0, 0, 35), UDim2.new(0.1, 0, 0, 185), function()
+        statusLabel.Text = "回答错误呀"
+        statusLabel.TextColor3 = Color3.fromRGB(255, 60, 60)
+    end)
+    createButton(frame, "退出回答", UDim2.new(0.45, 0, 0, 35), UDim2.new(0.5, 0, 0, 185), function()
+        exitCount += 1
+        if exitCount == 1 then
+            statusLabel.Text = "确定要退出回答吗？"
+            statusLabel.TextColor3 = Color3.fromRGB(255, 220, 60)
+        elseif exitCount >= 2 then
+            done = true
+            gui:Destroy()
+        end
+    end)
+    while not done do
+        task.wait()
+    end
+    -- 最终提示
+    local notifyGui = createScreenGui("Popup_FinalNotice")
+    local notifyFrame = createFrame(notifyGui, UDim2.new(0, 340, 0, 120), UDim2.new(0.5, -170, 0.5, -60))
+    createLabel(notifyFrame, "验证通过，白羽脚本可使用🤓", UDim2.new(1, 0, 0, 35), UDim2.new(0, 0, 0, 45))
+    playTempSound("12222253")
+    task.wait(3)
+    notifyGui:Destroy()
+end
+
+-- ================ 公告弹窗（公告文字可根据白羽主题修改） ================
+local function showAnnouncement()
+    local noticeGui = createScreenGui("Popup_Announcement")
+    local noticeFrame = createFrame(noticeGui, UDim2.new(0, 400, 0, 250), UDim2.new(0.5, -200, 0.5, -125))
+    -- 标题
+    local titleLabel = createBasicLabel(noticeFrame, "白羽脚本 版本公告", UDim2.new(1, 0, 0, 40), UDim2.new(0, 0, 0, 15))
+    titleLabel.TextColor3 = Color3.fromRGB(255, 210, 0)
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Center
+    -- 内容（可根据白羽主题修改更新日志等内容）
+    local contentLabel = createLabel(noticeFrame, "白羽脚本更新日志：\n新增白羽专属功能模块\n优化脚本运行稳定性\n修复部分已知问题", UDim2.new(1, -40, 0, 140), UDim2.new(0, 20, 0, 60))
+    contentLabel.TextWrapped = true
+    contentLabel.TextXAlignment = Enum.TextXAlignment.Left
+    -- 关闭按钮
+    local noticeDone = false
+    createButton(noticeFrame, "我知道了", UDim2.new(0.5, 0, 0, 40), UDim2.new(0.25, 0, 1, -50), function()
+        noticeDone = true
+        noticeGui:Destroy()
+    end)
+    while not noticeDone do
+        task.wait()
+    end
+end
+
+-- ================ 右下角弹窗逻辑 ======================
+local NOTIFICATION_DATA = {
+    maxCount = 5, -- 最大叠加数量
+    spacing = 6, -- 窗口间距
+    width = 120, -- 窗口宽度
+    height = 60, -- 窗口高度
+    activeWindows = {} -- 存储当前活跃窗口（按序号排序）
+}
+
+local function updateWindowPositions()
+    -- 遍历所有活跃窗口，按序号重新计算位置（序号1在最顶部）
+    for index, windowData in ipairs(NOTIFICATION_DATA.activeWindows) do
+        local frame = windowData.frame
+        if frame and frame:IsDescendantOf(game) then
+            -- 计算绝对Y坐标：序号越大越靠下，X轴紧贴右侧（仅留2像素缝隙）
+            local targetY = -NOTIFICATION_DATA.height - 10 - (NOTIFICATION_DATA.height + NOTIFICATION_DATA.spacing) * (index - 1)
+            frame.Position = UDim2.new(
+                1, -NOTIFICATION_DATA.width - 2, -- 右侧仅留2像素缝隙
+                1, targetY -- 基于序号的Y坐标（序号1最靠上）
+            )
+        end
+    end
+end
+
+local function showNotification(title, text, duration)
+    local localPlayer = Players.LocalPlayer
+    if not localPlayer then
+        return
+    end
+    local playerGui = localPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then
+        return
+    end
+
+    -- 步骤1：移除超出上限的最旧窗口（最后一个）
+    if #NOTIFICATION_DATA.activeWindows >= NOTIFICATION_DATA.maxCount then
+        local oldestWindow = NOTIFICATION_DATA.activeWindows[#NOTIFICATION_DATA.activeWindows]
+        if oldestWindow and oldestWindow.gui:IsDescendantOf(game) then
+            oldestWindow.gui:Destroy()
+        end
+        table.remove(NOTIFICATION_DATA.activeWindows, #NOTIFICATION_DATA.activeWindows)
+    end
+
+    -- 步骤2：所有现有窗口序号+1（索引后移）
+    for i = #NOTIFICATION_DATA.activeWindows, 1, -1 do
+        NOTIFICATION_DATA.activeWindows[i].index = i + 1
+    end
+
+    -- 步骤
